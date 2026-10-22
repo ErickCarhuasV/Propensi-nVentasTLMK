@@ -1,0 +1,20 @@
+-- Ejemplo: cómo se armarían las features en SQL Server si los datos vinieran de un DWH real.
+-- (El proyecto usa datos simulados; esto muestra el mismo pipeline en producción.)
+WITH previo AS (
+    SELECT  c.id_cliente,
+            COUNT(l.id_cliente)                             AS contactos_previos,
+            MAX(CASE WHEN l.rn = 1 THEN l.resultado END)    AS resultado_previo
+    FROM    dbo.clientes c
+    LEFT JOIN (
+        SELECT id_cliente, resultado,
+               ROW_NUMBER() OVER (PARTITION BY id_cliente ORDER BY fecha DESC) AS rn
+        FROM   dbo.llamadas
+        WHERE  fecha < @fecha_corte             -- solo información previa (evita leakage)
+    ) l ON l.id_cliente = c.id_cliente
+    GROUP BY c.id_cliente
+)
+SELECT  c.id_cliente, c.edad, c.ingreso_mensual, c.score_riesgo,
+        DATEDIFF(MONTH, c.fecha_alta, @fecha_corte)    AS antiguedad_meses,
+        p.contactos_previos, p.resultado_previo
+FROM    dbo.clientes c
+LEFT JOIN previo p ON p.id_cliente = c.id_cliente;
