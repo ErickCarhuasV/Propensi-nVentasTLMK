@@ -1,1 +1,39 @@
 
+{
+  "modelo_final": "Regresión logística (baseline)",
+  "metricas": {
+    "Regresión logística (baseline)": {
+      "roc_auc": 0.7882774526931234,
+      "pr_auc": 0.3256100537220418,
+      "brier": 0.07572698082922126
+    },
+    "HistGradientBoosting": {
+      "roc_auc": 0.7840154783273049,
+      "pr_auc": 0.3133317744847588,
+      "brier": 0.07634028821270514
+    }
+  },
+  "roi": {
+    "llamar_a_todos": {
+      "llamadas": 10025,
+      "conversiones": 967,
+      "utilidad": -4260.0
+    },
+    "30pct_azar": {
+      "llamadas": 3007,
+      "conversiones": 270,
+      "utilidad": -3684.0
+    },
+    "top30_modelo": {
+      "llamadas": 3007,
+      "conversiones": 661,
+      "utilidad": 43236.0
+    },
+    "politica_optima": {
+      "llamadas": 3116,
+      "conversiones": 670,
+      "utilidad": 43008.0
+    }
+  },
+  "top3_deciles_captura": 0.6835573940020683
+}
