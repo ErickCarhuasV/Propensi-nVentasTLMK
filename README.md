@@ -46,9 +46,5 @@ python src/simulate_data.py
 python src/train_model.py
 ```
 
-## Próximos pasos
-- Tuning con validación cruzada temporal y SHAP.
-- Exponer el scoring en una API (FastAPI) o dashboard (Power BI / Streamlit).
-
-## Stack
+## Herramientas utilizadas
 Python · pandas · NumPy · scikit-learn · matplotlib · SQL Server (feature engineering)
