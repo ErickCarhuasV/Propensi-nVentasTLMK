@@ -1,0 +1,156 @@
+"""
+Pasos utilizados: split temporal -> regresión logística vs HistGradientBoosting es una comparativa realizada para evalular el mejro mdoelo
+"""
+from pathlib import Path
+import json
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.inspection import permutation_importance
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (average_precision_score, brier_score_loss,
+                             precision_recall_curve, roc_auc_score, roc_curve)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+ROOT = Path(__file__).resolve().parents[1]
+FIG = ROOT / "reports" / "figures"
+FIG.mkdir(parents=True, exist_ok=True)
+
+NUM = ["edad", "ingreso_mensual", "antiguedad_meses", "score_riesgo",
+       "tiene_tarjeta_otro_banco", "contactos_previos", "hora_llamada"]
+CAT = ["segmento", "resultado_previo", "dia_semana", "canal"]
+TARGET = "convirtio"
+
+# Costos dentro del negocio, es un aprox respecto a una entidad bancaria donde laboré !
+COSTO_LLAMADA = 12.0        # S/ por llamada (agente + telefonía)
+INGRESO_CONVERSION = 120.0  # S/ de margen por tarjeta contratada
+
+
+def load():
+    df = pd.read_csv(ROOT / "data" / "campana_telemarketing.csv", parse_dates=["fecha"])
+    corte = pd.Timestamp("2026-05-01")  
+    return df[df.fecha < corte], df[df.fecha >= corte]
+
+
+def build_models():
+    pre_lr = ColumnTransformer([
+        ("num", StandardScaler(), NUM),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), CAT)])
+    pre_gb = ColumnTransformer([
+        ("num", "passthrough", NUM),
+        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), CAT)])
+    return {
+        "Regresión logística (baseline)": Pipeline([
+            ("pre", pre_lr), ("clf", LogisticRegression(max_iter=1000))]),
+        "HistGradientBoosting": Pipeline([
+            ("pre", pre_gb), ("clf", HistGradientBoostingClassifier(
+                max_depth=4, learning_rate=0.06, max_iter=300,
+                l2_regularization=1.0, random_state=42))]),
+    }
+
+
+def decile_table(y, p):
+    d = pd.DataFrame({"y": y.values, "p": p})
+    d["decil"] = pd.qcut(d.p.rank(method="first", ascending=False), 10, labels=range(1, 11))
+    t = d.groupby("decil", observed=True).agg(llamadas=("y", "size"), conversiones=("y", "sum"))
+    t["tasa"] = t.conversiones / t.llamadas
+    t["lift"] = t.tasa / d.y.mean()
+    t["captura_acum"] = t.conversiones.cumsum() / d.y.sum()
+    return t.reset_index()
+
+
+def roi(y, idx):
+    """Utilidad de llamar solo a los clientes indicados por `idx`."""
+    conv = int(y.values[idx].sum())
+    k = len(idx)
+    return {"llamadas": int(k), "conversiones": conv,
+            "utilidad": float(conv * INGRESO_CONVERSION - k * COSTO_LLAMADA)}
+
+
+def main():
+    train, test = load()
+    Xtr, ytr, Xte, yte = train[NUM + CAT], train[TARGET], test[NUM + CAT], test[TARGET]
+    print(f"train={len(train):,} (conv {ytr.mean():.2%}) | test={len(test):,} (conv {yte.mean():.2%})")
+
+    results, probs, fitted = {}, {}, {}
+    for name, model in build_models().items():
+        model.fit(Xtr, ytr)
+        p = model.predict_proba(Xte)[:, 1]
+        probs[name], fitted[name] = p, model
+        results[name] = {"roc_auc": roc_auc_score(yte, p),
+                         "pr_auc": average_precision_score(yte, p),
+                         "brier": brier_score_loss(yte, p)}
+    res = pd.DataFrame(results).T.round(4)
+    print("\n== Métricas (test temporal) ==\n", res)
+
+    best = res["pr_auc"].idxmax()
+    p_best = probs[best]
+    dec = decile_table(yte, p_best)
+    print(f"\n== Lift por deciles ({best}) ==\n", dec.round(3).to_string(index=False))
+
+    # --- Simulación de ROI ---
+    rng = np.random.default_rng(0)
+    n = len(yte)
+    k30 = int(n * 0.30)
+    breakeven = COSTO_LLAMADA / INGRESO_CONVERSION  # llamar solo si p > costo/ingreso
+    base_all = roi(yte, np.arange(n))
+    base_rand = roi(yte, rng.permutation(n)[:k30])
+    model_30 = roi(yte, np.argsort(-p_best)[:k30])
+    model_opt = roi(yte, np.where(p_best >= breakeven)[0])
+    print(f"\n== Simulación de ROI (costo S/{COSTO_LLAMADA:.0f}, margen S/{INGRESO_CONVERSION:.0f}, p* = {breakeven:.0%}) ==")
+    print("Llamar a todos                 :", base_all)
+    print("30% al azar                    :", base_rand)
+    print("Top 30% según modelo           :", model_30)
+    print("Política óptima (p >= p*)      :", model_opt)
+
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+    for name, p in probs.items():
+        fpr, tpr, _ = roc_curve(yte, p)
+        ax[0].plot(fpr, tpr, label=f"{name} ({results[name]['roc_auc']:.3f})")
+        pr, rc, _ = precision_recall_curve(yte, p)
+        ax[1].plot(rc, pr, label=f"{name} ({results[name]['pr_auc']:.3f})")
+    ax[0].plot([0, 1], [0, 1], "k--", lw=.8)
+    ax[0].set(title="Curva ROC", xlabel="FPR", ylabel="TPR")
+    ax[1].axhline(yte.mean(), color="k", ls="--", lw=.8)
+    ax[1].set(title="Precision-Recall", xlabel="Recall", ylabel="Precision")
+    ax[0].legend(fontsize=8); ax[1].legend(fontsize=8)
+    plt.tight_layout(); plt.savefig(FIG / "roc_pr.png", dpi=140); plt.close()
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(dec.decil.astype(int), dec.lift, color="#1f77b4")
+    ax.axhline(1, color="k", ls="--", lw=.8)
+    ax.set(title=f"Lift por decil – {best}", xlabel="Decil (1 = mayor propensión)", ylabel="Lift")
+    plt.tight_layout(); plt.savefig(FIG / "lift_deciles.png", dpi=140); plt.close()
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    x = np.append(0, np.arange(1, 11) * 10)
+    ax.plot(x, np.append(0, dec.captura_acum * 100), marker="o", label="Modelo")
+    ax.plot([0, 100], [0, 100], "k--", label="Azar")
+    ax.set(title="Curva de captura acumulada", xlabel="% de llamadas realizadas",
+           ylabel="% de conversiones capturadas")
+    ax.legend(); plt.tight_layout(); plt.savefig(FIG / "captura_acumulada.png", dpi=140); plt.close()
+
+    pi = permutation_importance(fitted[best], Xte, yte, scoring="average_precision",
+                                n_repeats=5, random_state=42, n_jobs=-1)
+    imp = pd.Series(pi.importances_mean, index=NUM + CAT).sort_values()
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    imp.plot.barh(ax=ax, color="#2ca02c")
+    ax.set(title="Importancia de variables (permutation, PR-AUC)")
+    plt.tight_layout(); plt.savefig(FIG / "importancia_variables.png", dpi=140); plt.close()
+
+    # --- Reporte ---
+    out = {"modelo_final": best, "metricas": results,
+           "roi": {"llamar_a_todos": base_all, "30pct_azar": base_rand, "top30_modelo": model_30, "politica_optima": model_opt},
+           "top3_deciles_captura": float(dec.captura_acum.iloc[2])}
+    (ROOT / "reports" / "metrics.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    dec.to_csv(ROOT / "reports" / "lift_deciles.csv", index=False)
+    print("\nOK -> reports/ (metrics.json, lift_deciles.csv, figures/)")
+
+
+if __name__ == "__main__":
+    main()
