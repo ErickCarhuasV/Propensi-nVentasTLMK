@@ -21,9 +21,6 @@ Todos los datos son sintéticos (generados en el archivo `src/simulate_data.py`)
 | **Top 30 % según modelo** | 3 007 | 661 | **+43 236** |
 | Política óptima (p ≥ costo/margen) | 3 116 | 670 | +43 008 |
 
-![lift](reports/figures/lift_deciles.png)
-![captura](reports/figures/captura_acumulada.png)
-
 ## Decisiones técnicas clave
 1. **Split temporal** (entrena ene–abr, evalúa may–jun) en lugar de split aleatorio: simula el uso real en producción.
 2. **Data leakage controlado:** `duracion_seg` se simula pero se **excluye** del modelo (solo se conoce después de la llamada).
