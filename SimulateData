@@ -1,0 +1,86 @@
+"""Simulación simple de una campaña de telemarketing bancario.
+
+Genera ~30k llamadas en 6 meses. El target `convirtio` (1 = contrató tarjeta de
+crédito) depende de un logit latente con ruido
+(desbalanceado ~10-12% y no perfectamente separable).
+"""
+from pathlib import Path
+import numpy as np
+import pandas as pd
+
+SEED = 42
+N = 30_000
+
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def simulate(n: int = N, seed: int = SEED) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+
+    fecha = pd.to_datetime("2026-01-01") + pd.to_timedelta(rng.integers(0, 181, n), unit="D")
+    edad = np.clip(rng.normal(38, 11, n), 18, 75).round().astype(int)
+    ingreso = np.clip(rng.lognormal(mean=7.9, sigma=0.55, size=n), 1025, 25_000).round(0)
+    antig = np.clip(rng.gamma(2.0, 18, n), 1, 240).round().astype(int)
+    score = np.clip(rng.normal(640, 80, n) + (ingreso - 3000) / 100, 300, 850).round().astype(int)
+    segmento = np.select([ingreso >= 7000, ingreso >= 3500], ["Premium", "Preferente"], "Masivo")
+    tiene_tarjeta_otro_banco = rng.binomial(1, 0.55, n)
+    contactos_previos = rng.poisson(1.4, n)
+    resultado_previo = rng.choice(
+        ["sin_contacto", "rechazo", "interesado", "convirtio"], n, p=[0.45, 0.30, 0.18, 0.07]
+    )
+    hora = rng.choice(np.arange(9, 21), n, p=np.array([6, 9, 10, 9, 7, 6, 7, 9, 10, 9, 6, 4]) / 92)
+    dia_semana = rng.choice(["Lun", "Mar", "Mie", "Jue", "Vie", "Sab"], n, p=[.18, .19, .19, .18, .16, .10])
+    canal = rng.choice(["Outbound", "Inbound_derivado"], n, p=[0.82, 0.18])
+
+    logit = (
+        -3.0
+        + 0.012 * (score - 640)
+        + 0.00018 * (ingreso - 3000)
+        - 0.018 * np.abs(edad - 36)
+        + 0.004 * np.minimum(antig, 96)
+        - 0.45 * tiene_tarjeta_otro_banco
+        - 0.12 * np.maximum(contactos_previos - 2, 0)
+        + np.select(
+            [resultado_previo == "convirtio", resultado_previo == "interesado", resultado_previo == "rechazo"],
+            [0.9, 0.7, -0.6], 0.0)
+        + np.where(np.isin(hora, [10, 11, 18, 19]), 0.35, 0.0)
+        + np.where(dia_semana == "Sab", -0.3, 0.0)
+        + np.where(canal == "Inbound_derivado", 0.8, 0.0)
+        + rng.normal(0, 0.8, n)  # ruido no observado
+    )
+    p = sigmoid(logit)
+    convirtio = rng.binomial(1, p)
+
+    # Duración: DEPENDE del resultado -> es data leakage, se incluye a propósito
+    # para mostrar por qué NO debe usarse en el modelo.
+    duracion = np.where(
+        convirtio == 1, rng.gamma(6, 55, n), rng.gamma(2.2, 40, n)
+    ).round().astype(int)
+
+    df = pd.DataFrame({
+        "id_llamada": np.arange(1, n + 1),
+        "fecha": fecha,
+        "edad": edad,
+        "ingreso_mensual": ingreso,
+        "antiguedad_meses": antig,
+        "score_riesgo": score,
+        "segmento": segmento,
+        "tiene_tarjeta_otro_banco": tiene_tarjeta_otro_banco,
+        "contactos_previos": contactos_previos,
+        "resultado_previo": resultado_previo,
+        "hora_llamada": hora,
+        "dia_semana": dia_semana,
+        "canal": canal,
+        "duracion_seg": duracion,
+        "convirtio": convirtio,
+    }).sort_values("fecha").reset_index(drop=True)
+    return df
+
+
+if __name__ == "__main__":
+    out = Path(__file__).resolve().parents[1] / "data" / "campana_telemarketing.csv"
+    df = simulate()
+    df.to_csv(out, index=False)
+    print(f"OK -> {out} | filas={len(df):,} | tasa conversión={df.convirtio.mean():.2%}")
